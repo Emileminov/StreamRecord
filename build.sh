@@ -26,8 +26,8 @@ echo "==> Копирую Info.plist"
 cp Info.plist "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-echo "==> Подписываю (ad-hoc)"
-codesign --force --deep -s - "$APP"
+echo "==> Подписываю"
+codesign --force --deep -s "Apple Development: sinteticdjs@gmail.com (7F6LLUU3ML)" "$APP"
 
 # Снимаем карантин, чтобы Gatekeeper не требовал «Правый клик → Открыть»
 # при каждой пересборке. Для локально собранного .app это безопасно.
