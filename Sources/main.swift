@@ -1089,12 +1089,27 @@ final class AppController: NSObject, NSApplicationDelegate,
 
     // MARK: - Построение окна
 
+    private func setupMenu() {
+        let app = NSApplication.shared
+
+        let mainMenu = NSMenu()
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+
+        let appMenu = NSMenu()
+        appMenuItem.submenu = appMenu
+
+        appMenu.addItem(NSMenuItem(title: "Выход", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+
+        app.mainMenu = mainMenu
+    }
+
     private func buildWindow() {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 800),
                           styleMask: [.titled, .closable, .miniaturizable],
                           backing: .buffered,
                           defer: false)
-        window.title = "Sony Recorder"
+        window.title = "StreamRecord"
 
         let content = NSView(frame: window.contentView!.bounds)
         content.wantsLayer = true
@@ -1250,6 +1265,7 @@ final class AppController: NSObject, NSApplicationDelegate,
         statusLabel.lineBreakMode = .byTruncatingMiddle
         content.addSubview(statusLabel)
 
+        setupMenu()
         window.makeKeyAndOrderFront(nil)
         layoutWindow(vertical: true)
         window.center()
