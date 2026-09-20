@@ -213,10 +213,10 @@ final class AppController: NSObject, NSApplicationDelegate,
 
     // Capture
     private let session = AVCaptureSession()
-    private let sessionQueue = DispatchQueue(label: "com.emil.sonyrecorder.session")
+    private let sessionQueue = DispatchQueue(label: "com.emil.streamrecord.session")
     private let movieOutput = AVCaptureMovieFileOutput()
     private let audioDataOutput = AVCaptureAudioDataOutput()
-    private let audioMeterQueue = DispatchQueue(label: "com.emil.sonyrecorder.audiometer")
+    private let audioMeterQueue = DispatchQueue(label: "com.emil.streamrecord.audiometer")
     private var videoInput: AVCaptureDeviceInput?
     private var audioInput: AVCaptureDeviceInput?
 
@@ -678,13 +678,13 @@ final class AppController: NSObject, NSApplicationDelegate,
         try? FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
 
         let ts = timestamp()
-        let fileURL = outputFolder.appendingPathComponent("sonyrecorder-\(ts).mov")
+        let fileURL = outputFolder.appendingPathComponent("streamrecord-\(ts).mov")
         recordedVertical = vertical
         movieOutput.startRecording(to: fileURL, recordingDelegate: self)
 
         // .wav стартует не здесь, а в didStartRecordingTo — чтобы совпасть с видео.
         pendingSidecarURL = (sidecarCheckbox.state == .on)
-            ? outputFolder.appendingPathComponent("sonyrecorder-\(ts)-audio.wav")
+            ? outputFolder.appendingPathComponent("streamrecord-\(ts)-audio.wav")
             : nil
         sidecarActive = false
 
@@ -1074,7 +1074,7 @@ final class AppController: NSObject, NSApplicationDelegate,
         let fm = FileManager.default
         let desktop = fm.urls(for: .desktopDirectory, in: .userDomainMask).first
             ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
-        let fallback = desktop.appendingPathComponent("SonyRecorder")
+        let fallback = desktop.appendingPathComponent("StreamRecord")
 
         // Восстанавливаем последнюю выбранную папку, иначе — папка на Рабочем столе.
         outputFolder = UserDefaults.standard.url(forKey: outputFolderKey) ?? fallback
