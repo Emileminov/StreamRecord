@@ -75,7 +75,7 @@ tell application "Finder"
         set current view of w to icon view
         set toolbar visible of w to false
         set statusbar visible of w to false
-        set the bounds of w to {$WIN_X, $WIN_Y, $((WIN_X + WIN_W)), $((WIN_Y + WIN_H))}
+        set sidebar width of w to 0
 
         set opts to the icon view options of w
         set arrangement of opts to not arranged
@@ -86,6 +86,10 @@ tell application "Finder"
 
         set position of item "$VOL.app" of w to {$APP_X, $APP_Y}
         set position of item "Applications" of w to {$LINK_X, $LINK_Y}
+
+        -- Размер ставим последним: заданный раньше Finder успевает переписать
+        -- своим, пока применяются вид и позиции иконок.
+        set the bounds of w to {$WIN_X, $WIN_Y, $((WIN_X + WIN_W)), $((WIN_Y + WIN_H))}
 
         update without registering applications
         delay 2
@@ -112,20 +116,28 @@ echo "==> Проверяю готовый образ"
 hdiutil attach "$DMG" >/dev/null 2>&1
 sleep 2
 BG_REFS=$(strings "/Volumes/$VOL/.DS_Store" | grep -c "bg.tiff" || true)
-ICONS=$(osascript <<APPLESCRIPT
+GOT=$(osascript <<APPLESCRIPT
 tell application "Finder" to tell disk "$VOL"
     open
     delay 1
-    set out to (icon size of the icon view options of container window) as string
+    set w to container window
+    set b to bounds of w
+    set out to ((icon size of the icon view options of w) as string) & "|" ¬
+        & ((item 1 of b) as string) & "," & ((item 2 of b) as string) & "," ¬
+        & ((item 3 of b) as string) & "," & ((item 4 of b) as string)
     close
     return out
 end tell
 APPLESCRIPT
 )
 hdiutil detach "/Volumes/$VOL" >/dev/null 2>&1
-echo "    размер иконок: $ICONS, ссылок на фон в .DS_Store: $BG_REFS"
 
-if [ "$ICONS" != "$ICON_SIZE" ] || [ "$BG_REFS" -eq 0 ]; then
+WANT="$ICON_SIZE|$WIN_X,$WIN_Y,$((WIN_X + WIN_W)),$((WIN_Y + WIN_H))"
+echo "    иконки|границы: $GOT"
+echo "    ожидалось:      $WANT"
+echo "    ссылок на фон в .DS_Store: $BG_REFS"
+
+if [ "$GOT" != "$WANT" ] || [ "$BG_REFS" -eq 0 ]; then
     echo "Оформление не записалось — проверь образ вручную." >&2
     exit 1
 fi
