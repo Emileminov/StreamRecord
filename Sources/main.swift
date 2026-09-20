@@ -284,7 +284,6 @@ final class AppController: NSObject, NSApplicationDelegate,
         requestPermissions { [weak self] videoGranted in
             guard let self = self else { return }
             self.reloadDevices()
-            self.registerDeviceObservers()
             if videoGranted {
                 self.reconfigureSession(with: self.selectedVideoDevice())
                 self.startSession()
@@ -329,26 +328,8 @@ final class AppController: NSObject, NSApplicationDelegate,
 
     // MARK: - Устройства
 
-    /// Камера iPhone (Continuity Camera) видна только через discovery session
-    /// с типом .continuityCamera и только если в Info.plist есть
-    /// NSCameraUseContinuityCameraDeviceType. Старый devices(for:) её не отдаёт.
-    private func discoverVideoDevices() -> [AVCaptureDevice] {
-        guard #available(macOS 14.0, *) else {
-            return AVCaptureDevice.devices(for: .video)
-        }
-        return AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera],
-            mediaType: .video,
-            position: .unspecified).devices
-    }
-
     private func reloadDevices() {
-        // Список пересобирается и на горячем подключении, поэтому выбор
-        // пользователя восстанавливаем по uniqueID, а не сбрасываем на первый.
-        let previousVideoID = selectedVideoDevice()?.uniqueID
-        let previousAudioID = selectedAudioDevice()?.uniqueID
-
-        videoDevices = discoverVideoDevices()
+        videoDevices = AVCaptureDevice.devices(for: .video)
         audioDevices = AVCaptureDevice.devices(for: .audio)
 
         // --- Видео ---
@@ -363,12 +344,7 @@ final class AppController: NSObject, NSApplicationDelegate,
             for device in videoDevices {
                 devicePopup.addItem(withTitle: device.localizedName)
             }
-            if let id = previousVideoID,
-               let idx = videoDevices.firstIndex(where: { $0.uniqueID == id }) {
-                devicePopup.selectItem(at: idx)
-            } else {
-                devicePopup.selectItem(at: 0)
-            }
+            devicePopup.selectItem(at: 0)
             if AVCaptureDevice.authorizationStatus(for: .video) == .authorized {
                 recordButton.isEnabled = true
             }
@@ -386,37 +362,11 @@ final class AppController: NSObject, NSApplicationDelegate,
             }
             // По умолчанию — системный микрофон.
             let defaultID = AVCaptureDevice.default(for: .audio)?.uniqueID
-            if let id = previousAudioID,
-               let idx = audioDevices.firstIndex(where: { $0.uniqueID == id }) {
-                audioPopup.selectItem(at: idx)
-            } else if let idx = audioDevices.firstIndex(where: { $0.uniqueID == defaultID }) {
+            if let idx = audioDevices.firstIndex(where: { $0.uniqueID == defaultID }) {
                 audioPopup.selectItem(at: idx)
             } else {
                 audioPopup.selectItem(at: 0)
             }
-        }
-    }
-
-    /// iPhone как Continuity Camera подключается уже после запуска приложения,
-    /// поэтому список камер надо обновлять на лету.
-    private func registerDeviceObservers() {
-        let nc = NotificationCenter.default
-        for name in [AVCaptureDevice.wasConnectedNotification,
-                     AVCaptureDevice.wasDisconnectedNotification] {
-            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.devicesChanged()
-            }
-        }
-    }
-
-    private func devicesChanged() {
-        // Во время записи список не трогаем: пересборка сессии оборвала бы дубль.
-        guard !isRecording else { return }
-        let before = selectedVideoDevice()?.uniqueID
-        reloadDevices()
-        let current = selectedVideoDevice()
-        if current?.uniqueID != before {
-            reconfigureSession(with: current)
         }
     }
 
