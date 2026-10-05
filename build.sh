@@ -27,7 +27,12 @@ cp Info.plist "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 echo "==> Подписываю"
-codesign --force --deep -s "Apple Development: sinteticdjs@gmail.com (7F6LLUU3ML)" "$APP"
+if [ -n "${SIGN_ID:-}" ]; then
+    # Релиз: Developer ID + hardened runtime + разрешения на камеру/микрофон (см. release.sh)
+    codesign --force --options runtime --timestamp --entitlements StreamRecord.entitlements --sign "$SIGN_ID" "$APP"
+else
+    codesign --force --deep -s "Apple Development: sinteticdjs@gmail.com (7F6LLUU3ML)" "$APP"
+fi
 
 # Снимаем карантин, чтобы Gatekeeper не требовал «Правый клик → Открыть»
 # при каждой пересборке. Для локально собранного .app это безопасно.
@@ -36,4 +41,4 @@ xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
 echo "==> Готово: $APP"
 # Первый запуск через open регистрирует приложение в LaunchServices —
 # дальше открывается обычным двойным кликом.
-open "$APP"
+[ -n "${NO_OPEN:-}" ] || open "$APP"
