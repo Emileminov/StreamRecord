@@ -13,7 +13,11 @@ rm -rf "$APP"
 mkdir -p "$MACOS_DIR" "$RES_DIR"
 
 echo "==> Компилирую Sources/main.swift"
-swiftc -O Sources/main.swift -o "$MACOS_DIR/StreamRecord"
+# Универсальный бинарник: Apple Silicon + Intel (macOS 26 ещё работает на части Intel-маков)
+swiftc -O -target arm64-apple-macos11.0 Sources/main.swift -o build/StreamRecord-arm64
+swiftc -O -target x86_64-apple-macos11.0 Sources/main.swift -o build/StreamRecord-x86_64
+lipo -create build/StreamRecord-arm64 build/StreamRecord-x86_64 -output "$MACOS_DIR/StreamRecord"
+rm -f build/StreamRecord-arm64 build/StreamRecord-x86_64
 
 echo "==> Генерирую иконку приложения"
 ICONSET="build/AppIcon.iconset"
