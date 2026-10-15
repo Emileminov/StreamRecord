@@ -230,7 +230,10 @@ final class AppController: NSObject, NSApplicationDelegate,
     private var meterTimer: Timer?
 
     /// Записываем ли текущий/следующий дубль в вертикали.
-    private var vertical: Bool { orientationControl?.selectedSegmentTag() == 1 }
+    private var vertical: Bool { (orientationControl?.selectedSegmentTag() ?? 0) >= 1 }
+    /// 9:16 кропом: центр горизонтального кадра без поворота (iPhone держат вертикально).
+    private var cropMode: Bool { orientationControl?.selectedSegmentTag() == 2 }
+    private var recordedCrop = false
     private var recordedVertical = false
     /// Удалось ли повернуть картинку «на лету» через capture-connection.
     private var liveRotationApplied = false
@@ -507,7 +510,7 @@ final class AppController: NSObject, NSApplicationDelegate,
 
     /// Поворачивает картинку под выбранный формат (вертикаль/горизонталь).
     private func applyOrientation() {
-        let v = vertical
+        let v = vertical && !cropMode   // в режиме кропа картинку не вращаем
 
         var movieRotated = false
         if let conn = movieOutput.connection(with: .video) {
@@ -518,7 +521,9 @@ final class AppController: NSObject, NSApplicationDelegate,
         }
         liveRotationApplied = movieRotated
 
-        if v && !movieRotated {
+        if cropMode {
+            setStatus("Формат: 9:16 кропом из центра кадра")
+        } else if v && !movieRotated {
             setStatus("Вертикаль: камера не поворачивает на лету — доверну файл при сохранении")
         }
     }
@@ -634,6 +639,8 @@ final class AppController: NSObject, NSApplicationDelegate,
         layoutWindow(vertical: vertical)
         if !vertical {
             setStatus("Формат: горизонтально 16:9")
+        } else if cropMode {
+            setStatus("Формат: 9:16 кропом из центра кадра")
         } else if liveRotationApplied {
             setStatus("Формат: вертикально 9:16")
         }
@@ -680,6 +687,7 @@ final class AppController: NSObject, NSApplicationDelegate,
         let ts = timestamp()
         let fileURL = outputFolder.appendingPathComponent("streamrecord-\(ts).mov")
         recordedVertical = vertical
+        recordedCrop = cropMode
         movieOutput.startRecording(to: fileURL, recordingDelegate: self)
 
         // .wav стартует не здесь, а в didStartRecordingTo — чтобы совпасть с видео.
@@ -911,9 +919,9 @@ final class AppController: NSObject, NSApplicationDelegate,
                 }
             }
 
-            if self.recordedVertical && !self.liveRotationApplied {
-                self.setStatus("Поворачиваю видео в вертикаль…")
-                self.rotateToVertical(outputFileURL) { finalURL, rotateError in
+            if self.recordedCrop || (self.recordedVertical && !self.liveRotationApplied) {
+                self.setStatus(self.recordedCrop ? "Кадрирую видео в 9:16…" : "Поворачиваю видео в вертикаль…")
+                self.rotateToVertical(outputFileURL, crop: self.recordedCrop) { finalURL, rotateError in
                     if let rotateError = rotateError {
                         self.setStatus("Сохранено без поворота: \(outputFileURL.lastPathComponent) — \(rotateError.localizedDescription)")
                         return
@@ -1007,7 +1015,7 @@ final class AppController: NSObject, NSApplicationDelegate,
 
     // MARK: - Поворот файла в вертикаль (запасной путь)
 
-    private func rotateToVertical(_ url: URL, completion: @escaping (URL, Error?) -> Void) {
+    private func rotateToVertical(_ url: URL, crop: Bool = false, completion: @escaping (URL, Error?) -> Void) {
         let asset = AVURLAsset(url: url)
         guard let track = asset.tracks(withMediaType: .video).first else {
             completion(url, nil)
@@ -1016,14 +1024,19 @@ final class AppController: NSObject, NSApplicationDelegate,
 
         let size = track.naturalSize
         let videoComposition = AVMutableVideoComposition()
-        videoComposition.renderSize = CGSize(width: size.height, height: size.width)
+        // Кроп: вырезаем центральную полосу 9:16 (чётная ширина), без поворота.
+        let cropW = (size.height * 9 / 16 / 2).rounded(.down) * 2
+        videoComposition.renderSize = crop ? CGSize(width: min(cropW, size.width), height: size.height)
+                                           : CGSize(width: size.height, height: size.width)
         videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
 
         let instruction = AVMutableVideoCompositionInstruction()
         instruction.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
         let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
         // Поворот на 90° по часовой стрелке.
-        let transform = CGAffineTransform(translationX: size.height, y: 0).rotated(by: .pi / 2)
+        let transform = crop
+            ? CGAffineTransform(translationX: -((size.width - videoComposition.renderSize.width) / 2).rounded(), y: 0)
+            : CGAffineTransform(translationX: size.height, y: 0).rotated(by: .pi / 2)
         layer.setTransform(transform, at: .zero)
         instruction.layerInstructions = [layer]
         videoComposition.instructions = [instruction]
@@ -1133,7 +1146,7 @@ final class AppController: NSObject, NSApplicationDelegate,
         audioPopup = compactPopup(action: #selector(audioSourceChanged))
         barView.addSubview(audioPopup)
 
-        orientationControl = NSSegmentedControl(labels: ["16:9", "9:16"],
+        orientationControl = NSSegmentedControl(labels: ["16:9", "9:16", "9:16 кроп"],
                                                 trackingMode: .selectOne,
                                                 target: self,
                                                 action: #selector(orientationChanged))
