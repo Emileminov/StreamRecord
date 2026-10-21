@@ -275,6 +275,11 @@ final class AppController: NSObject, NSApplicationDelegate,
     private var sidecarActive = false
     private var sidecarURL: URL?
     private var pendingSidecarURL: URL?   // старт файла откладываем до реального начала .mov
+    // Контроль .wav во время записи (тап вызывается с аудио-потока, поля читаются грубо — это ок).
+    private var sidecarLastTap = Date.distantPast
+    private var sidecarPeak: Float = 0
+    private var sidecarWriteErrors = 0
+    private var sidecarEngineObserver: NSObjectProtocol?
 
     // MARK: NSApplicationDelegate
 
@@ -682,7 +687,25 @@ final class AppController: NSObject, NSApplicationDelegate,
             return
         }
 
+        // Звук включён, а записать его нечем — спрашиваем до старта, а не после часа записи.
+        if audioCheckbox.state == .on {
+            if sidecarCheckbox.state == .on && sidecarEngine == nil { ensureSidecarEngine() }
+            let authorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+            if !authorized || (sidecarCheckbox.state == .on && sidecarEngine == nil) {
+                let alert = NSAlert()
+                alert.alertStyle = .critical
+                alert.messageText = "Звук не будет записан"
+                alert.informativeText = authorized
+                    ? "Микрофон из списка «Звук» не запустился. Выбери другой источник."
+                    : "Нет доступа к микрофону. Системные настройки → Конфиденциальность → Микрофон → StreamRecord."
+                alert.addButton(withTitle: "Отмена")
+                alert.addButton(withTitle: "Всё равно записать")
+                if alert.runModal() == .alertFirstButtonReturn { return }
+            }
+        }
+
         try? FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        timerLabel.textColor = .white
 
         let ts = timestamp()
         let fileURL = outputFolder.appendingPathComponent("streamrecord-\(ts).mov")
@@ -749,6 +772,7 @@ final class AppController: NSObject, NSApplicationDelegate,
         }
         sidecarMonoFormat = mono
 
+        var conv: AVAudioConverter?
         node.installTap(onBus: 0, bufferSize: 4096, format: fmt) { [weak self] buffer, _ in
             guard let self = self else { return }
             let n = Int(buffer.frameLength)
@@ -769,7 +793,38 @@ final class AppController: NSObject, NSApplicationDelegate,
                 let a = abs(v); if a > peak { peak = a }
             }
 
-            if let f = self.sidecarAudioFile { try? f.write(from: monoBuf) }
+            self.sidecarLastTap = Date()
+            if self.sidecarAudioFile != nil, peak > self.sidecarPeak { self.sidecarPeak = peak }
+            if let f = self.sidecarAudioFile {
+                do {
+                    let outFmt = f.processingFormat
+                    if abs(outFmt.sampleRate - mono.sampleRate) < 1 {
+                        try f.write(from: monoBuf)
+                    } else {
+                        // Устройство сменило частоту (напр. Bluetooth/USB) — пересэмплируем в формат файла.
+                        if conv == nil || conv!.outputFormat.sampleRate != outFmt.sampleRate {
+                            conv = AVAudioConverter(from: mono, to: outFmt)
+                        }
+                        let cap = AVAudioFrameCount(Double(n) * outFmt.sampleRate / mono.sampleRate) + 32
+                        if let c = conv, let out = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: cap) {
+                            var supplied = false
+                            var convErr: NSError?
+                            c.convert(to: out, error: &convErr) { _, status in
+                                if supplied { status.pointee = .noDataNow; return nil }
+                                supplied = true; status.pointee = .haveData; return monoBuf
+                            }
+                            if let e = convErr { throw e }
+                            try f.write(from: out)
+                        }
+                    }
+                } catch {
+                    self.sidecarWriteErrors += 1
+                    if self.sidecarWriteErrors == 1 {
+                        let msg = error.localizedDescription
+                        DispatchQueue.main.async { self.warnAudio("Ошибка записи .wav: \(msg)") }
+                    }
+                }
+            }
 
             let db = peak > 0 ? 20 * log10(peak) : -120
             DispatchQueue.main.async { self.recordButton.setLevel(CGFloat((db + 60) / 57)) }
@@ -783,6 +838,30 @@ final class AppController: NSObject, NSApplicationDelegate,
             return
         }
         sidecarEngine = engine
+        if let o = sidecarEngineObserver { NotificationCenter.default.removeObserver(o) }
+        // Смена устройства/частоты останавливает AVAudioEngine молча — перезапускаем, файл не закрываем.
+        sidecarEngineObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            self?.restartSidecarEngine(reason: "изменилась конфигурация аудио")
+        }
+    }
+
+    /// Перезапуск движка без закрытия .wav (запись продолжается в тот же файл).
+    private func restartSidecarEngine(reason: String) {
+        if let engine = sidecarEngine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            sidecarEngine = nil
+        }
+        sidecarMonoFormat = nil
+        ensureSidecarEngine()
+        if isRecording { warnAudio("Микрофон перезапущен: \(reason)") }
+    }
+
+    /// Заметное предупреждение про звук: красный таймер + статус.
+    private func warnAudio(_ text: String) {
+        setStatus("⚠️ " + text)
+        timerLabel.textColor = .systemRed
     }
 
     private func teardownSidecarEngine() {
@@ -820,6 +899,9 @@ final class AppController: NSObject, NSApplicationDelegate,
             setStatus("Не удалось создать отдельный аудиофайл"); return
         }
         sidecarActive = true
+        sidecarPeak = 0
+        sidecarWriteErrors = 0
+        sidecarLastTap = Date()
         setStatus("Пишу видео + \(sidecarURL!.lastPathComponent) (моно)")
     }
 
@@ -844,9 +926,23 @@ final class AppController: NSObject, NSApplicationDelegate,
             guard let self = self, let start = self.recordingStart else { return }
             let elapsed = Int(Date().timeIntervalSince(start))
             self.timerLabel.stringValue = String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
+            self.checkSidecarHealth(elapsed: elapsed)
         }
         RunLoop.main.add(timer, forMode: .common)
         recordingTimer = timer
+    }
+
+    /// Сторож .wav: поток остановился — перезапускаем; сигнала нет — предупреждаем.
+    private func checkSidecarHealth(elapsed: Int) {
+        guard sidecarActive else { return }
+        if Date().timeIntervalSince(sidecarLastTap) > 2 {
+            sidecarLastTap = Date()
+            restartSidecarEngine(reason: "звук от микрофона остановился")
+        } else if elapsed >= 8 && sidecarPeak < 0.0005 {
+            warnAudio("Микрофон не даёт сигнал (.wav тихий). Проверь источник «Звук»")
+        } else if sidecarWriteErrors == 0 {
+            timerLabel.textColor = .white
+        }
     }
 
     private func stopTimer() {
@@ -936,7 +1032,11 @@ final class AppController: NSObject, NSApplicationDelegate,
 
     /// Последний шаг: если задана поправка синхронизации — довороты звука, иначе сразу готово.
     private func finishSaving(_ url: URL) {
-        let wavSuffix = sidecarActive ? "  + \(sidecarURL?.lastPathComponent ?? ".wav")" : ""
+        var wavSuffix = sidecarActive ? "  + \(sidecarURL?.lastPathComponent ?? ".wav")" : ""
+        if sidecarActive && (sidecarPeak < 0.0005 || sidecarWriteErrors > 0) {
+            wavSuffix += "  ⚠️ в .wav нет звука!"
+            timerLabel.textColor = .systemRed
+        }
         guard syncOffsetMs != 0 else {
             setStatus("Сохранено: \(url.lastPathComponent)\(wavSuffix)")
             return
