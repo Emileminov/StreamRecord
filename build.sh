@@ -19,11 +19,14 @@ swiftc -O -target x86_64-apple-macos11.0 Sources/main.swift -o build/StreamRecor
 lipo -create build/StreamRecord-arm64 build/StreamRecord-x86_64 -output "$MACOS_DIR/StreamRecord"
 rm -f build/StreamRecord-arm64 build/StreamRecord-x86_64
 
-echo "==> Генерирую иконку приложения"
+echo "==> Иконка приложения (Tools/AppIcon.png, генератор: Tools/make_icon_bubble.py)"
 ICONSET="build/AppIcon.iconset"
 rm -rf "$ICONSET"
 mkdir -p "$ICONSET"
-swift Tools/make_icon.swift "$ICONSET"
+for sz in 16 32 128 256 512; do
+    sips -z $sz $sz Tools/AppIcon.png --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null
+    sips -z $((sz*2)) $((sz*2)) Tools/AppIcon.png --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null
+done
 iconutil -c icns "$ICONSET" -o "$RES_DIR/AppIcon.icns"
 
 echo "==> Копирую Info.plist"
