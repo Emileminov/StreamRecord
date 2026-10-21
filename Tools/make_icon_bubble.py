@@ -96,13 +96,6 @@ def render(v):
         img = glyph(img, np.abs(d - 150) - 38, c0, c0)
         img = glyph(img, d - 52, c0, c0)
     img = bubble(img, c0, c0, 385)
-    if v != 3:
-        sx, sy, sr = 782, 782, 168
-        img = red_dot(img, sx, sy, 36)
-        img = bubble(img, sx, sy, sr)
-    else:
-        img = red_dot(img, 782, 782, 36)
-        img = bubble(img, 782, 782, 168)
     out = Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)).convert("RGBA")
     # форма macOS: сжимаем в 0.89 и скругляем
     r = 0.2237 * S
