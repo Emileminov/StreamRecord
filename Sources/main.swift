@@ -203,6 +203,7 @@ final class AppController: NSObject, NSApplicationDelegate,
     private var recordButton: RecordButton!
     private var timerLabel: NSTextField!
     private var folderButton: NSButton!
+    private var refreshButton: NSButton!
     private var audioCheckbox: NSButton!
     private var statusLabel: NSTextField!
     private var barView: NSView!
@@ -575,6 +576,31 @@ final class AppController: NSObject, NSApplicationDelegate,
         }
     }
 
+    /// Перечитывает список камер и микрофонов (подключил камеру после запуска — нажал «Обновить»).
+    @objc private func refreshDevices() {
+        guard !isRecording else { return }
+        let prevVideo = selectedVideoDevice()?.uniqueID
+        let prevAudio = selectedAudioDevice()?.uniqueID
+        let hadVideo = videoInput != nil
+
+        reloadDevices()
+
+        if let id = prevVideo, let i = videoDevices.firstIndex(where: { $0.uniqueID == id }) { devicePopup.selectItem(at: i) }
+        if let id = prevAudio, let i = audioDevices.firstIndex(where: { $0.uniqueID == id }) { audioPopup.selectItem(at: i) }
+
+        let sameVideo = selectedVideoDevice()?.uniqueID == prevVideo && hadVideo
+        if !sameVideo, !videoDevices.isEmpty,
+           AVCaptureDevice.authorizationStatus(for: .video) == .authorized {
+            deviceChanged()                       // новая/другая камера — перезапускаем превью
+        }
+        if selectedAudioDevice()?.uniqueID != prevAudio {
+            audioSourceChanged()
+        }
+        if !videoDevices.isEmpty && sameVideo {
+            setStatus("Обновлено: камер \(videoDevices.count), микрофонов \(audioDevices.count)")
+        }
+    }
+
     @objc private func audioSourceChanged() {
         session.beginConfiguration()
         applyAudioInput()
@@ -919,6 +945,7 @@ final class AppController: NSObject, NSApplicationDelegate,
         sidecarCheckbox.isEnabled = !locked && audioCheckbox.state == .on
         orientationControl.isEnabled = !locked
         folderButton.isEnabled = !locked
+        refreshButton.isEnabled = !locked
     }
 
     // MARK: - Таймер и индикатор звука
@@ -1249,6 +1276,18 @@ final class AppController: NSObject, NSApplicationDelegate,
         audioPopup = compactPopup(action: #selector(audioSourceChanged))
         barView.addSubview(audioPopup)
 
+        refreshButton = NSButton(title: "", target: self, action: #selector(refreshDevices))
+        refreshButton.bezelStyle = .rounded
+        refreshButton.controlSize = .small
+        if #available(macOS 11.0, *),
+           let img = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Обновить") {
+            refreshButton.image = img
+        } else {
+            refreshButton.title = "↻"
+        }
+        refreshButton.toolTip = "Обновить список камер и микрофонов"
+        barView.addSubview(refreshButton)
+
         orientationControl = NSSegmentedControl(labels: ["16:9", "9:16", "9:16 кроп"],
                                                 trackingMode: .selectOne,
                                                 target: self,
@@ -1474,11 +1513,15 @@ final class AppController: NSObject, NSApplicationDelegate,
         }
 
         // Ряд 1: две равные выпадашки, зеркальные отступы.
+        refreshButton.sizeToFit()
+        let refreshW = max(refreshButton.frame.width, 30)
+        refreshButton.frame.size.width = refreshW
         let popupW = ((w - pad * 2 - gap) / 2).rounded()
-        for p in [devicePopup!, audioPopup!] {
-            p.frame.size = NSSize(width: popupW, height: p.fittingSize.height)
-        }
+        let camW = popupW - refreshW - 4
+        devicePopup.frame.size = NSSize(width: camW, height: devicePopup.fittingSize.height)
+        audioPopup.frame.size = NSSize(width: popupW, height: audioPopup.fittingSize.height)
         center(devicePopup, x: pad, cy: row1CY)
+        center(refreshButton, x: pad + camW + 4, cy: row1CY)
         center(audioPopup, x: w - pad - popupW, cy: row1CY)
 
         // Ряд 2: формат · звук · +.wav · папка — по фактической ширине, группа по центру.
