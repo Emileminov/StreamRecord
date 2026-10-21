@@ -1288,12 +1288,14 @@ final class AppController: NSObject, NSApplicationDelegate,
         refreshButton.toolTip = "Обновить список камер и микрофонов"
         barView.addSubview(refreshButton)
 
-        orientationControl = NSSegmentedControl(labels: ["16:9", "9:16", "9:16 кроп"],
+        orientationControl = NSSegmentedControl(labels: ["16:9", "9:16", "Кроп"],
                                                 trackingMode: .selectOne,
                                                 target: self,
                                                 action: #selector(orientationChanged))
         orientationControl.controlSize = .small
-        orientationControl.segmentDistribution = .fillEqually
+        orientationControl.segmentDistribution = .fit
+        orientationControl.setToolTip("Кроп: вертикальная полоса 9:16 из центра горизонтального кадра, без поворота", forSegment: 2)
+        orientationControl.setToolTip("Поворот кадра на 90° (камера на боку)", forSegment: 1)
         orientationControl.selectedSegment = 1          // по умолчанию — вертикаль
         barView.addSubview(orientationControl)
 
@@ -1452,7 +1454,8 @@ final class AppController: NSObject, NSApplicationDelegate,
             previewSize = NSSize(width: w.rounded(), height: (w * 9 / 16).rounded())
         }
 
-        let contentW = previewSize.width
+        // Панель настроек не уже 360 pt, иначе ряд кнопок упирается в края окна (узкая вертикаль).
+        let contentW = max(previewSize.width, 360)
         let contentH = previewSize.height + barH + statusH
 
         // Меняем размер окна, сохраняя верхнюю грань на месте.
@@ -1466,7 +1469,8 @@ final class AppController: NSObject, NSApplicationDelegate,
         }
         window.setFrame(f, display: true, animate: false)
 
-        previewView.frame = NSRect(x: 0, y: barH + statusH, width: contentW, height: previewSize.height)
+        previewView.frame = NSRect(x: ((contentW - previewSize.width) / 2).rounded(), y: barH + statusH,
+                                   width: previewSize.width, height: previewSize.height)
         barView.frame = NSRect(x: 0, y: statusH, width: contentW, height: barH)
         statusLabel.frame = NSRect(x: 12, y: 3, width: contentW - 24, height: statusH - 6)
 
@@ -1530,8 +1534,10 @@ final class AppController: NSObject, NSApplicationDelegate,
         audioCheckbox.sizeToFit()
         sidecarCheckbox.sizeToFit()
         folderButton.sizeToFit()
-        let g2: CGFloat = 9
         let w2 = row2.map { $0.frame.width }
+        // Зазоры сжимаем, если ряд не влезает: по бокам должны оставаться отступы pad.
+        let avail2 = w - pad * 2
+        let g2: CGFloat = min(9, max(3, (avail2 - w2.reduce(0, +)) / CGFloat(row2.count - 1)))
         let total2 = w2.reduce(0, +) + g2 * CGFloat(row2.count - 1)
         var x2 = (mid - total2 / 2).rounded()
         for (i, v) in row2.enumerated() {
