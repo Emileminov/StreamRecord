@@ -689,7 +689,10 @@ final class AppController: NSObject, NSApplicationDelegate,
 
         // Звук включён, а записать его нечем — спрашиваем до старта, а не после часа записи.
         if audioCheckbox.state == .on {
-            if sidecarCheckbox.state == .on && sidecarEngine == nil { ensureSidecarEngine() }
+            // Движок мог тихо остановиться после смены устройств — перед стартом поднимаем заново.
+            if sidecarCheckbox.state == .on && sidecarEngine?.isRunning != true {
+                restartSidecarEngine(reason: "перед стартом")
+            }
             let authorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
             if !authorized || (sidecarCheckbox.state == .on && sidecarEngine == nil) {
                 let alert = NSAlert()
