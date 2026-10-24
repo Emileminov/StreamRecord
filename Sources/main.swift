@@ -616,13 +616,19 @@ final class AppController: NSObject, NSApplicationDelegate,
             return
         }
         formatPopup.addItem(withTitle: "Качество: авто")
+        // В подсказке — все режимы, которые камера отдаёт системе (для диагностики).
+        let all = Set(dev.formats.flatMap { f -> [String] in
+            let d = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
+            return f.videoSupportedFrameRateRanges.map { "\(d.width)×\(d.height) · \(Int($0.maxFrameRate.rounded())) fps" }
+        }).sorted()
+        formatPopup.toolTip = "Режимы камеры «\(dev.localizedName)»:\n" + all.joined(separator: "\n")
         for t in Self.tiers {
             var best: (f: AVCaptureDevice.Format, fps: Int, w: Int, rank: Int, wide: Int)?
             for f in dev.formats {
                 let w = Int(CMVideoFormatDescriptionGetDimensions(f.formatDescription).width)
                 guard w >= t.minW, w < t.maxW else { continue }
                 let fps = f.videoSupportedFrameRateRanges.map { Int($0.maxFrameRate.rounded()) }.filter { $0 <= 60 }.max() ?? 0
-                guard fps >= 24 else { continue }
+                guard fps >= 1 else { continue }   // низкие fps тоже показываем: у 4K по UVC часто 5-15 fps
                 let h = Int(CMVideoFormatDescriptionGetDimensions(f.formatDescription).height)
                 let wide = abs(w * 9 - h * 16) < w / 4 ? 1 : 0          // 16:9 предпочтительнее 4:3
                 let cand = (f: f, fps: fps, w: w, rank: formatRank(f), wide: wide)
