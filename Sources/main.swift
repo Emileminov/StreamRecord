@@ -597,6 +597,7 @@ final class AppController: NSObject, NSApplicationDelegate,
 
     /// Уровни качества по ширине кадра: пункт показываем, только если камера реально так умеет.
     private static let tiers: [(key: String, title: String, minW: Int, maxW: Int)] = [
+        ("720", "HD · 720p", 1100, 1800),
         ("1080", "Full HD · 1080p", 1800, 2300),
         ("2k", "2K · 1440p", 2300, 2800),
         ("3k", "3K · 2.7K", 2800, 3500),
@@ -616,15 +617,17 @@ final class AppController: NSObject, NSApplicationDelegate,
         }
         formatPopup.addItem(withTitle: "Качество: авто")
         for t in Self.tiers {
-            var best: (f: AVCaptureDevice.Format, fps: Int, w: Int, rank: Int)?
+            var best: (f: AVCaptureDevice.Format, fps: Int, w: Int, rank: Int, wide: Int)?
             for f in dev.formats {
                 let w = Int(CMVideoFormatDescriptionGetDimensions(f.formatDescription).width)
                 guard w >= t.minW, w < t.maxW else { continue }
                 let fps = f.videoSupportedFrameRateRanges.map { Int($0.maxFrameRate.rounded()) }.filter { $0 <= 60 }.max() ?? 0
                 guard fps >= 24 else { continue }
-                let cand = (f: f, fps: fps, w: w, rank: formatRank(f))
+                let h = Int(CMVideoFormatDescriptionGetDimensions(f.formatDescription).height)
+                let wide = abs(w * 9 - h * 16) < w / 4 ? 1 : 0          // 16:9 предпочтительнее 4:3
+                let cand = (f: f, fps: fps, w: w, rank: formatRank(f), wide: wide)
                 if let b = best {
-                    if (cand.fps, -cand.rank, cand.w) > (b.fps, -b.rank, b.w) { best = cand }
+                    if (cand.wide, cand.fps, -cand.rank, cand.w) > (b.wide, b.fps, -b.rank, b.w) { best = cand }
                 } else { best = cand }
             }
             guard let b = best else { continue }
