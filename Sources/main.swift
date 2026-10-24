@@ -1,5 +1,6 @@
 import Cocoa
 import AVFoundation
+import VideoToolbox
 import CoreAudio
 import AudioToolbox
 
@@ -204,12 +205,19 @@ final class AppController: NSObject, NSApplicationDelegate,
     private var timerLabel: NSTextField!
     private var folderButton: NSButton!
     private var refreshButton: NSButton!
+    // Качество записи: формат камеры (разрешение · fps) и кодек.
+    private var formatPopup: NSPopUpButton!
+    private var codecPopup: NSPopUpButton!
+    private var qualityFormats: [(format: AVCaptureDevice.Format, fps: Int)] = []
+    private let qualityKey = "qualityFormat"
+    private let codecKey = "qualityCodec"
+    private var recordedCodec = 0
     private var audioCheckbox: NSButton!
     private var statusLabel: NSTextField!
     private var barView: NSView!
 
     // Геометрия компоновки
-    private let barH: CGFloat = 136
+    private let barH: CGFloat = 166
     private let statusH: CGFloat = 22
 
     // Capture
@@ -476,6 +484,8 @@ final class AppController: NSObject, NSApplicationDelegate,
 
         session.commitConfiguration()
         previewView.previewLayer.session = session
+        populateQualityPopup()
+        applyQuality()
         applyOrientation()
     }
 
@@ -574,6 +584,167 @@ final class AppController: NSObject, NSApplicationDelegate,
                 self.setStatus("Камера: \(self.selectedVideoDevice()?.localizedName ?? "—")")
             }
         }
+    }
+
+    // MARK: - Качество записи (формат камеры + кодек)
+
+    private static let codecTitles = ["Авто (по умолчанию)", "HEVC · высокий битрейт",
+                                      "H.264 · высокий битрейт", "ProRes 422 · максимум"]
+
+    private func formatRank(_ f: AVCaptureDevice.Format) -> Int {
+        switch CMFormatDescriptionGetMediaSubType(f.formatDescription) {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange: return 0
+        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange: return 1
+        case kCMVideoCodecType_JPEG, kCMVideoCodecType_JPEG_OpenDML: return 2   // MJPEG: у UVC даёт больше fps
+        default: return 3
+        }
+    }
+
+    /// Собирает список «разрешение · fps», которые реально умеет выбранная камера.
+    private func populateQualityPopup() {
+        let saved = UserDefaults.standard.string(forKey: qualityKey)
+        formatPopup.removeAllItems()
+        qualityFormats = []
+        guard let dev = videoInput?.device else {
+            formatPopup.addItem(withTitle: "Качество: нет камеры")
+            formatPopup.isEnabled = false
+            return
+        }
+        var best: [String: (AVCaptureDevice.Format, Int, Int, Int, Int)] = [:]   // ключ → format, w, h, fps, rank
+        for f in dev.formats {
+            let d = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
+            var fpsSet = Set<Int>()
+            for r in f.videoSupportedFrameRateRanges {
+                fpsSet.insert(Int(r.maxFrameRate.rounded()))
+            }
+            for fps in fpsSet where fps >= 15 {
+                let key = "\(d.width)x\(d.height)@\(fps)"
+                let rank = formatRank(f)
+                if let old = best[key], old.4 <= rank { continue }
+                best[key] = (f, Int(d.width), Int(d.height), fps, rank)
+            }
+        }
+        let sorted = best.values.sorted {
+            ($0.1 * $0.2, $0.3) > ($1.1 * $1.2, $1.3)
+        }
+        formatPopup.addItem(withTitle: "Авто (системный выбор)")
+        for e in sorted {
+            qualityFormats.append((e.0, e.3))
+            let tag = e.1 >= 3800 ? "4K · " : (e.1 >= 2500 ? "2.7K · " : "")
+            formatPopup.addItem(withTitle: "\(tag)\(e.1)×\(e.2) · \(e.3) fps")
+            formatPopup.lastItem?.representedObject = "\(e.1)x\(e.2)@\(e.3)"
+        }
+        formatPopup.isEnabled = true
+        if let saved = saved, let i = formatPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == saved }) {
+            formatPopup.selectItem(at: i)
+        } else if sorted.count > 0 {
+            // По умолчанию — лучшее до 1080p при максимальной частоте, не больше 60 fps.
+            let pick = sorted.first(where: { $0.1 <= 1920 && $0.3 <= 60 && $0.3 >= 30 })
+            if let pick = pick, let i = formatPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == "\(pick.1)x\(pick.2)@\(pick.3)" }) {
+                formatPopup.selectItem(at: i)
+            }
+        }
+    }
+
+    @objc private func qualityChanged() {
+        if let key = formatPopup.selectedItem?.representedObject as? String {
+            UserDefaults.standard.set(key, forKey: qualityKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: qualityKey)
+        }
+        applyQuality()
+        applyOrientation()
+        setStatus("Качество: \(formatPopup.titleOfSelectedItem ?? "—"), \(codecPopup.titleOfSelectedItem ?? "—")")
+    }
+
+    @objc private func codecChanged() {
+        UserDefaults.standard.set(codecPopup.indexOfSelectedItem, forKey: codecKey)
+        applyCodec()
+        setStatus("Кодек: \(codecPopup.titleOfSelectedItem ?? "—")")
+    }
+
+    /// Применяет выбранный формат камеры (разрешение + fps) и кодек.
+    private func applyQuality() {
+        guard let dev = videoInput?.device else { return }
+        let idx = formatPopup.indexOfSelectedItem
+        session.beginConfiguration()
+        if idx >= 1, idx - 1 < qualityFormats.count {
+            let q = qualityFormats[idx - 1]
+            do {
+                try dev.lockForConfiguration()
+                dev.activeFormat = q.format
+                let dur = CMTime(value: 1, timescale: Int32(q.fps))
+                dev.activeVideoMinFrameDuration = dur
+                dev.activeVideoMaxFrameDuration = dur
+                dev.unlockForConfiguration()
+                let got = CMVideoFormatDescriptionGetDimensions(dev.activeFormat.formatDescription)
+                let want = CMVideoFormatDescriptionGetDimensions(q.format.formatDescription)
+                if got.width != want.width || got.height != want.height {
+                    setStatus("Камера не приняла формат \(want.width)×\(want.height), работает на \(got.width)×\(got.height)")
+                }
+            } catch {
+                setStatus("Не удалось выставить формат: \(error.localizedDescription)")
+            }
+        } else if session.canSetSessionPreset(.high) {
+            session.sessionPreset = .high
+        }
+        session.commitConfiguration()
+        applyCodec()
+    }
+
+    private func applyCodec() {
+        guard let conn = movieOutput.connection(with: .video) else { return }
+        let choice = codecPopup.indexOfSelectedItem
+        guard choice > 0 else {
+            movieOutput.setOutputSettings(nil, for: conn)
+            return
+        }
+        let dev = videoInput?.device
+        let d = dev.map { CMVideoFormatDescriptionGetDimensions($0.activeFormat.formatDescription) }
+        let pixels = Double((d?.width ?? 1920)) * Double((d?.height ?? 1080))
+        var fps = 30.0
+        if let dur = dev?.activeVideoMinFrameDuration, dur.isValid, dur.value > 0 {
+            fps = Double(dur.timescale) / Double(dur.value)
+        }
+        let codec: AVVideoCodecType
+        var settings: [String: Any] = [:]
+        switch choice {
+        case 1: codec = .hevc;  settings[AVVideoAverageBitRateKey] = Int(pixels * fps * 0.20)
+        case 2: codec = .h264;  settings[AVVideoAverageBitRateKey] = Int(pixels * fps * 0.30)
+        default: codec = .proRes422
+        }
+        guard Self.hasEncoder(codec) else {
+            movieOutput.setOutputSettings(nil, for: conn)
+            setStatus("Кодек «\(Self.codecTitles[choice])» недоступен на этой камере/Маке, использую авто")
+            return
+        }
+        var out: [String: Any] = [AVVideoCodecKey: codec]
+        if !settings.isEmpty { out[AVVideoCompressionPropertiesKey] = settings }
+        movieOutput.setOutputSettings(out, for: conn)
+    }
+
+    /// Есть ли в системе энкодер под кодек (иначе setOutputSettings упадёт исключением).
+    private static func hasEncoder(_ codec: AVVideoCodecType) -> Bool {
+        let type: CMVideoCodecType
+        switch codec {
+        case .hevc: type = kCMVideoCodecType_HEVC
+        case .h264: type = kCMVideoCodecType_H264
+        default: type = kCMVideoCodecType_AppleProRes422
+        }
+        var list: CFArray?
+        guard VTCopyVideoEncoderList(nil, &list) == noErr, let arr = list as? [[String: Any]] else { return false }
+        return arr.contains { ($0[kVTVideoEncoderList_CodecType as String] as? UInt32) == type }
+    }
+
+    /// Пресет экспорта под кодек записи (чтобы поворот/кроп не пережимали ProRes и HEVC в H.264).
+    private func exportPresetName(for asset: AVAsset) -> String {
+        let want: String
+        switch recordedCodec {
+        case 1: want = AVAssetExportPresetHEVCHighestQuality
+        case 3: want = AVAssetExportPresetAppleProRes422LPCM
+        default: want = AVAssetExportPresetHighestQuality
+        }
+        return AVAssetExportSession.exportPresets(compatibleWith: asset).contains(want) ? want : AVAssetExportPresetHighestQuality
     }
 
     /// Перечитывает список камер и микрофонов (подключил камеру после запуска — нажал «Обновить»).
@@ -740,6 +911,7 @@ final class AppController: NSObject, NSApplicationDelegate,
         let fileURL = outputFolder.appendingPathComponent("streamrecord-\(ts).mov")
         recordedVertical = vertical
         recordedCrop = cropMode
+        recordedCodec = codecPopup.indexOfSelectedItem
         movieOutput.startRecording(to: fileURL, recordingDelegate: self)
 
         // .wav стартует не здесь, а в didStartRecordingTo — чтобы совпасть с видео.
@@ -946,6 +1118,8 @@ final class AppController: NSObject, NSApplicationDelegate,
         orientationControl.isEnabled = !locked
         folderButton.isEnabled = !locked
         refreshButton.isEnabled = !locked
+        formatPopup.isEnabled = !locked && qualityFormats.count > 0
+        codecPopup.isEnabled = !locked
     }
 
     // MARK: - Таймер и индикатор звука
@@ -1176,7 +1350,7 @@ final class AppController: NSObject, NSApplicationDelegate,
         try? FileManager.default.removeItem(at: finalURL)
 
         guard let export = AVAssetExportSession(asset: asset,
-                                                presetName: AVAssetExportPresetHighestQuality) else {
+                                                presetName: exportPresetName(for: asset)) else {
             completion(url, nil)
             return
         }
@@ -1287,6 +1461,16 @@ final class AppController: NSObject, NSApplicationDelegate,
         }
         refreshButton.toolTip = "Обновить список камер и микрофонов"
         barView.addSubview(refreshButton)
+
+        formatPopup = compactPopup(action: #selector(qualityChanged))
+        formatPopup.toolTip = "Разрешение и частота кадров камеры"
+        barView.addSubview(formatPopup)
+
+        codecPopup = compactPopup(action: #selector(codecChanged))
+        codecPopup.toolTip = "Кодек и битрейт записи"
+        for title in Self.codecTitles { codecPopup.addItem(withTitle: title) }
+        codecPopup.selectItem(at: UserDefaults.standard.object(forKey: codecKey) as? Int ?? 1)
+        barView.addSubview(codecPopup)
 
         orientationControl = NSSegmentedControl(labels: ["16:9", "9:16", "Кроп"],
                                                 trackingMode: .selectOne,
@@ -1507,6 +1691,7 @@ final class AppController: NSObject, NSApplicationDelegate,
         let mid = w / 2
         let row1CY = barH - 10 - 11
         let row2CY = barH - 10 - 11 - 30
+        let rowQCY = barH - 10 - 11 - 60    // качество: формат + кодек
         let row3CY: CGFloat = 46   // усиление .wav
         let row4CY: CGFloat = 17   // синхро A/V
 
@@ -1527,6 +1712,12 @@ final class AppController: NSObject, NSApplicationDelegate,
         center(devicePopup, x: pad, cy: row1CY)
         center(refreshButton, x: pad + camW + 4, cy: row1CY)
         center(audioPopup, x: w - pad - popupW, cy: row1CY)
+
+        // Ряд качества: формат камеры и кодек — две равные выпадашки.
+        formatPopup.frame.size = NSSize(width: popupW, height: formatPopup.fittingSize.height)
+        codecPopup.frame.size = NSSize(width: popupW, height: codecPopup.fittingSize.height)
+        center(formatPopup, x: pad, cy: rowQCY)
+        center(codecPopup, x: w - pad - popupW, cy: rowQCY)
 
         // Ряд 2: формат · звук · +.wav · папка — по фактической ширине, группа по центру.
         let row2: [NSView] = [orientationControl, audioCheckbox, sidecarCheckbox, folderButton]
