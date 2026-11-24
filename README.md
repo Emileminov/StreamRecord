@@ -82,6 +82,20 @@ chmod +x build.sh && ./build.sh
 подпишет его ad-hoc подписью и откроет папку `build`. Запускать — двойным кликом
 по `StreamRecord.app`.
 
+## Релиз (подпись Developer ID и нотаризация)
+
+Через Xcode, аккаунт разработчика в Xcode → Settings → Accounts:
+
+```bash
+cd release
+xcodegen generate
+xcodebuild -project StreamRecord.xcodeproj -scheme StreamRecord -configuration Release -destination 'generic/platform=macOS' -archivePath build/StreamRecord.xcarchive -allowProvisioningUpdates archive
+xcodebuild -exportArchive -archivePath build/StreamRecord.xcarchive -exportOptionsPlist ExportOptions.plist -exportPath build/upload -allowProvisioningUpdates
+xcodebuild -exportNotarizedApp -archivePath build/StreamRecord.xcarchive -exportPath build/notarized
+```
+
+Затем положить `build/notarized/StreamRecord.app` в `../build/` и собрать оформленный образ: `./Tools/make_dmg.sh`. Старый `release.sh` работает только с сертификатом Developer ID в связке ключей.
+
 ## Если macOS не даёт открыть приложение
 
 `build.sh` сам снимает метку карантина (`xattr -dr com.apple.quarantine`) и
