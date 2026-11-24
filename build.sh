@@ -38,7 +38,8 @@ if [ -n "${SIGN_ID:-}" ]; then
     # Релиз: Developer ID + hardened runtime + разрешения на камеру/микрофон (см. release.sh)
     codesign --force --options runtime --timestamp --entitlements StreamRecord.entitlements --sign "$SIGN_ID" "$APP"
 else
-    codesign --force --deep -s "-" "$APP"
+    # Локальная сборка: ad-hoc подпись. Свой сертификат можно задать через DEV_SIGN_ID
+    codesign --force --deep -s "${DEV_SIGN_ID:--}" "$APP"
 fi
 
 # Снимаем карантин, чтобы Gatekeeper не требовал «Правый клик → Открыть»
